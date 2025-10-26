@@ -16,6 +16,7 @@ export interface CodexConfig {
   model: string;
   modelProvider: string;
   azure: AzureProviderConfig;
+  reasoningEffort?: string;
 }
 
 export function loadCodexConfig(): CodexConfig {
@@ -54,6 +55,8 @@ export function loadCodexConfig(): CodexConfig {
     );
   }
 
+  const reasoningEffort = parsed?.model_reasoning_effort;
+
   return {
     model,
     modelProvider,
@@ -65,5 +68,6 @@ export function loadCodexConfig(): CodexConfig {
       apiVersion,
       apiKey,
     },
+    reasoningEffort: typeof reasoningEffort === 'string' ? reasoningEffort : undefined,
   };
 }

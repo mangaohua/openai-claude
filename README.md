@@ -23,6 +23,20 @@ export PORT=9999
 npm run dev
 ```
 
+Or run the compiled CLI directly:
+
+```bash
+npm run build
+node dist/cli.js --port 9999
+```
+
+After publishing you can install it globally:
+
+```bash
+npm install -g openai-claude
+openai-claude --port 9999 --host 0.0.0.0
+```
+
 Set Claude Code to use the proxy:
 
 ```bash
@@ -39,7 +53,9 @@ By default the server requires `x-api-key`/`Bearer` auth that matches `ANTHROPIC
 
 - The proxy reads `~/.codex/config.toml` on startup to discover the Azure endpoint, wire API, and API key environment variable.
 - If the configured `env_key` (e.g. `OPENAI_API_KEY`) is unset, the proxy falls back to `ANTHROPIC_AUTH_TOKEN` so you can reuse the same secret for both Claude Code and Azure.
+- Optional `model_reasoning_effort` in `~/.codex/config.toml` is forwarded to Azure via the `reasoning.effort` field unless a request provides its own override.
 - `/v1/messages` now supports both standard and streaming responses. Streaming is proxied as SSE using Anthropic-compatible events.
 - Tool/function calls are translated between Anthropic and Azure `responses` formats, so Claude Code can invoke tools and return results through the proxy.
 - Requests are forwarded to the Azure `responses` API and the response is translated back to the Anthropic message format expected by Claude Code.
 - Tool outputs should be returned to the assistant as Anthropic `tool_result` content blocks; the proxy relays them to Azure as `function_call_output` entries automatically.
+- `npm run build` is executed automatically before `npm publish` so the generated `dist/` folder is packaged; the published module exposes a global `openai-claude` executable.

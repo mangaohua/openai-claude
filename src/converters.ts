@@ -56,6 +56,9 @@ export interface AnthropicRequest {
   metadata?: Record<string, unknown>;
   tools?: AnthropicToolDefinition[];
   tool_choice?: AnthropicToolChoice;
+  reasoning?: {
+    effort?: string;
+  };
 }
 
 export type AzureTextContentBlockType =
@@ -136,6 +139,9 @@ export interface AzureResponsesRequestBody {
   metadata?: Record<string, unknown>;
   tools?: AzureToolDefinition[];
   tool_choice?: AzureToolChoice | 'auto' | 'none' | 'required';
+  reasoning?: {
+    effort?: string;
+  };
 }
 
 export interface AzureUsage {
@@ -344,6 +350,7 @@ function safeJsonParse<T = unknown>(value: string | undefined, fallback: T): T {
 export function anthropicToAzureRequest(
   body: AnthropicRequest,
   fallbackModel: string,
+  options?: { defaultReasoningEffort?: string },
 ): AzureResponsesRequestBody {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new Error('Anthropic request must include at least one message');
@@ -441,6 +448,11 @@ export function anthropicToAzureRequest(
   }
   if (body.metadata) {
     azureRequest.metadata = body.metadata;
+  }
+
+  const reasoningEffort = body.reasoning?.effort ?? options?.defaultReasoningEffort;
+  if (typeof reasoningEffort === 'string' && reasoningEffort.trim().length > 0) {
+    azureRequest.reasoning = { effort: reasoningEffort };
   }
 
   const azureTools = anthropicToolsToAzure(body.tools);

@@ -1,3 +1,4 @@
+import http from 'http';
 import express, { Request, Response } from 'express';
 import axios from 'axios';
 import { loadCodexConfig } from './config';
@@ -7,15 +8,6 @@ import {
   anthropicToAzureRequest,
   azureToAnthropicResponse,
 } from './converters';
-
-const app = express();
-app.use(express.json({ limit: '2mb' }));
-
-const serverConfig = loadCodexConfig();
-const { azure } = serverConfig;
-
-const expectedAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN ?? null;
-const debugLogging = process.env.DEBUG === 'true';
 
 function writeSseEvent(res: Response, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
@@ -96,83 +88,107 @@ function streamAnthropicResponse(res: Response, response: AnthropicResponse): vo
 
   res.end();
 }
-
-function buildAzureUrl(): string {
-  const base = azure.baseUrl.replace(/\/$/, '');
-  let url = `${base}/${azure.wireApi}`;
-  if (azure.apiVersion) {
-    const separator = url.includes('?') ? '&' : '?';
-    url = `${url}${separator}api-version=${encodeURIComponent(azure.apiVersion)}`;
-  }
-  return url;
+export interface ServerOptions {
+  port?: number;
+  host?: string;
 }
 
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok' });
-});
+export function startServer(options: ServerOptions = {}): http.Server {
+  const app = express();
+  app.use(express.json({ limit: '2mb' }));
 
-app.post('/v1/messages', async (req: Request, res: Response) => {
-  try {
-    if (expectedAnthropicToken) {
-      const providedToken =
-        req.header('x-api-key') ??
-        (req.header('authorization')?.startsWith('Bearer ')
-          ? req.header('authorization')?.slice('Bearer '.length)
-          : undefined);
+  const serverConfig = loadCodexConfig();
+  const { azure } = serverConfig;
 
-      if (!providedToken || providedToken !== expectedAnthropicToken) {
-        return res.status(401).json({ error: { message: 'Invalid or missing API key' } });
-      }
+  const expectedAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN ?? null;
+  const debugLogging = process.env.DEBUG === 'true';
+
+  function buildAzureUrl(): string {
+    const base = azure.baseUrl.replace(/\/$/, '');
+    let url = `${base}/${azure.wireApi}`;
+    if (azure.apiVersion) {
+      const separator = url.includes('?') ? '&' : '?';
+      url = `${url}${separator}api-version=${encodeURIComponent(azure.apiVersion)}`;
     }
-
-    const body = req.body as AnthropicRequest;
-    const azureRequest = anthropicToAzureRequest(body, serverConfig.model);
-
-    if (debugLogging) {
-      console.log('Anthropic request:', JSON.stringify(body));
-      console.log('Azure request payload:', JSON.stringify(azureRequest));
-    }
-    const url = buildAzureUrl();
-
-    const azureResponse = await axios.post(url, azureRequest, {
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': azure.apiKey,
-      },
-      timeout: 60_000,
-    });
-
-    const anthropicResponse = azureToAnthropicResponse(azureResponse.data, azureRequest.model);
-
-    if (body.stream) {
-      streamAnthropicResponse(res, anthropicResponse);
-      return;
-    }
-
-    return res.json(anthropicResponse);
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      const status = error.response?.status ?? 500;
-      const data = error.response?.data;
-      return res.status(status).json({
-        error: {
-          message:
-            typeof data === 'string'
-              ? data
-              : data?.error?.message ??
-                data?.message ??
-                'Unexpected error from Azure OpenAI service',
-        },
-      });
-    }
-
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return res.status(400).json({ error: { message } });
+    return url;
   }
-});
 
-const port = process.env.PORT ? Number(process.env.PORT) : 9999;
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({ status: 'ok' });
+  });
 
-app.listen(port, () => {
-  console.log(`Claude proxy server running on http://0.0.0.0:${port}`);
-});
+  app.post('/v1/messages', async (req: Request, res: Response) => {
+    try {
+      if (expectedAnthropicToken) {
+        const providedToken =
+          req.header('x-api-key') ??
+          (req.header('authorization')?.startsWith('Bearer ')
+            ? req.header('authorization')?.slice('Bearer '.length)
+            : undefined);
+
+        if (!providedToken || providedToken !== expectedAnthropicToken) {
+          return res.status(401).json({ error: { message: 'Invalid or missing API key' } });
+        }
+      }
+
+      const body = req.body as AnthropicRequest;
+      const azureRequest = anthropicToAzureRequest(body, serverConfig.model, {
+        defaultReasoningEffort: serverConfig.reasoningEffort,
+      });
+
+      if (debugLogging) {
+        console.log('Anthropic request:', JSON.stringify(body));
+        console.log('Azure request payload:', JSON.stringify(azureRequest));
+      }
+      const url = buildAzureUrl();
+
+      const azureResponse = await axios.post(url, azureRequest, {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': azure.apiKey,
+        },
+        timeout: 60_000,
+      });
+
+      const anthropicResponse = azureToAnthropicResponse(azureResponse.data, azureRequest.model);
+
+      if (body.stream) {
+        streamAnthropicResponse(res, anthropicResponse);
+        return;
+      }
+
+      res.json(anthropicResponse);
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status ?? 500;
+        const data = error.response?.data;
+        res.status(status).json({
+          error: {
+            message:
+              typeof data === 'string'
+                ? data
+                : data?.error?.message ??
+                  data?.message ??
+                  'Unexpected error from Azure OpenAI service',
+          },
+        });
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ error: { message } });
+    }
+  });
+
+  const host = options.host ?? process.env.HOST ?? '0.0.0.0';
+  const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : 9999);
+  const server = app.listen(port, host, () => {
+    console.log(`Claude proxy server running on http://${host}:${port}`);
+  });
+
+  return server;
+}
+
+if (require.main === module) {
+  startServer();
+}
