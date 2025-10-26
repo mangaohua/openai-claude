@@ -59,3 +59,4 @@ By default the server requires `x-api-key`/`Bearer` auth that matches `ANTHROPIC
 - Requests are forwarded to the Azure `responses` API and the response is translated back to the Anthropic message format expected by Claude Code.
 - Tool outputs should be returned to the assistant as Anthropic `tool_result` content blocks; the proxy relays them to Azure as `function_call_output` entries automatically.
 - `npm run build` is executed automatically before `npm publish` so the generated `dist/` folder is packaged; the published module exposes a global `openai-claude` executable.
+- Image content blocks from Claude Code (`type: "image"`) are converted to Azure `input_image` payloads, so vision prompts work through the proxy.

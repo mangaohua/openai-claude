@@ -1,6 +1,6 @@
 {
   "name": "openai-claude",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Anthropic-compatible proxy for Azure OpenAI so Claude Code can use GPT deployments",
   "main": "dist/server.js",
   "bin": {

@@ -19,10 +19,31 @@ export type AnthropicToolResultBlock = {
   status?: string;
 };
 
+export type AnthropicImageSource =
+  | {
+      type: 'base64';
+      media_type?: string;
+      data: string;
+    }
+  | {
+    type: 'url';
+    url: string;
+  }
+  | {
+    type: 'input_image_url';
+    url: string;
+  };
+
+export type AnthropicImageBlock = {
+  type: 'image';
+  source: AnthropicImageSource;
+};
+
 export type AnthropicContentBlock =
   | AnthropicTextBlock
   | AnthropicToolUseBlock
-  | AnthropicToolResultBlock;
+  | AnthropicToolResultBlock
+  | AnthropicImageBlock;
 
 export interface AnthropicMessage {
   role: 'user' | 'assistant' | 'system';
@@ -76,6 +97,12 @@ export interface AzureTextContentBlock {
   text: string;
 }
 
+export interface AzureImageContentBlock {
+  type: 'input_image';
+  image_url?: string;
+  image_base64?: string;
+}
+
 export interface AzureToolCall {
   id?: string;
   type?: 'function';
@@ -92,7 +119,7 @@ export interface AzureToolCallBlock {
   tool_calls: AzureToolCall[];
 }
 
-export type AzureContentBlock = AzureTextContentBlock | AzureToolCallBlock;
+export type AzureContentBlock = AzureTextContentBlock | AzureToolCallBlock | AzureImageContentBlock;
 
 export interface AzureMessageInput {
   type: 'message';
@@ -247,13 +274,21 @@ function normalizeMessageContent(content: AnthropicMessage['content']): Anthropi
         if (!('tool_use_id' in block)) {
           throw new Error('tool_result block must include tool_use_id');
         }
+      return {
+        type: 'tool_result',
+        tool_use_id: block.tool_use_id,
+        content: block.content,
+        text: block.text,
+        is_error: block.is_error,
+        status: block.status,
+      };
+      case 'image':
+        if (!('source' in block)) {
+          throw new Error('image block must include source');
+        }
         return {
-          type: 'tool_result',
-          tool_use_id: block.tool_use_id,
-          content: block.content,
-          text: block.text,
-          is_error: block.is_error,
-          status: block.status,
+          type: 'image',
+          source: (block as AnthropicImageBlock).source,
         };
       default:
         throw new Error(`Unsupported content block type: ${(block as { type: string }).type}`);
@@ -347,6 +382,36 @@ function safeJsonParse<T = unknown>(value: string | undefined, fallback: T): T {
   }
 }
 
+function anthropicImageToAzure(block: AnthropicImageBlock): AzureImageContentBlock {
+  const source = block.source;
+  if (!source || typeof source !== 'object' || !('type' in source)) {
+    throw new Error('Image block is missing source information');
+  }
+
+  if (source.type === 'base64') {
+    const mediaType = source.media_type ?? 'image/png';
+    if (!source.data) {
+      throw new Error('Image block with base64 source is missing data');
+    }
+    return {
+      type: 'input_image',
+      image_url: `data:${mediaType};base64,${source.data}`,
+    };
+  }
+
+  if (source.type === 'url' || source.type === 'input_image_url') {
+    if (!source.url) {
+      throw new Error('Image block with url source is missing url');
+    }
+    return {
+      type: 'input_image',
+      image_url: source.url,
+    };
+  }
+
+  throw new Error(`Unsupported image source type: ${(source as { type: string }).type}`);
+}
+
 export function anthropicToAzureRequest(
   body: AnthropicRequest,
   fallbackModel: string,
@@ -369,35 +434,37 @@ export function anthropicToAzureRequest(
   for (const message of body.messages) {
     const blocks = normalizeMessageContent(message.content);
 
-    let textAccumulator: string[] = [];
-    const flushText = () => {
-      if (textAccumulator.length === 0) {
+    const role = message.role;
+    const contentType: AzureTextContentBlockType = role === 'assistant' ? 'output_text' : 'input_text';
+
+    let messageContent: AzureContentBlock[] = [];
+    const flushMessage = () => {
+      if (messageContent.length === 0) {
         return;
       }
-      const role = message.role;
-      const contentType: AzureTextContentBlockType =
-        role === 'assistant' ? 'output_text' : 'input_text';
-
       input.push({
         type: 'message',
         role,
-        content: [
-          {
-            type: contentType,
-            text: textAccumulator.join(''),
-          },
-        ],
+        content: messageContent,
       });
-      textAccumulator = [];
+      messageContent = [];
     };
 
     for (const block of blocks) {
       switch (block.type) {
         case 'text':
-          textAccumulator.push(block.text);
+          if (block.text.length > 0) {
+            messageContent.push({
+              type: contentType,
+              text: block.text,
+            });
+          }
+          break;
+        case 'image':
+          messageContent.push(anthropicImageToAzure(block));
           break;
         case 'tool_use':
-          flushText();
+          flushMessage();
           input.push({
             type: 'function_call',
             call_id: block.id,
@@ -406,7 +473,7 @@ export function anthropicToAzureRequest(
           });
           break;
         case 'tool_result':
-          flushText();
+          flushMessage();
           input.push({
             type: 'function_call_output',
             call_id: block.tool_use_id,
@@ -418,7 +485,7 @@ export function anthropicToAzureRequest(
       }
     }
 
-    flushText();
+    flushMessage();
   }
 
   const requestedModel =
